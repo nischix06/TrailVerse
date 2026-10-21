@@ -24,6 +24,9 @@
 - [ADR-012: Configuration Management & 12-Factor Environment Settings](#adr-012-configuration-management--12-factor-environment-settings)
 - [ADR-013: Streamlined Minimal Backend Architecture](#adr-013-streamlined-minimal-backend-architecture)
 - [ADR-014: Modern Authentication Cryptography (pwdlib[argon2] & PyJWT)](#adr-014-modern-authentication-cryptography-pwdlibargon2--pyjwt)
+- [ADR-015: User-Focused Backend Scope and Database Baseline](#adr-015-user-focused-backend-scope-and-database-baseline)
+- [ADR-016: User Registration and Credential Persistence](#adr-016-user-registration-and-credential-persistence)
+- [ADR-017: JSON Login and JWT Identity](#adr-017-json-login-and-jwt-identity)
 
 ---
 
@@ -73,6 +76,9 @@ What choice was made? What technologies, patterns, or architecture were adopted?
 | **ADR-012** | 12-Factor Environment Settings (`pydantic-settings`) | `Implemented` | Configuration & DevOps |
 | **ADR-013** | Streamlined Minimal Backend Architecture | `Implemented` | Project Architecture |
 | **ADR-014** | Modern Authentication Cryptography (`pwdlib[argon2]` & `PyJWT`) | `Implemented` | Security / Crypto & Auth |
+| **ADR-015** | User-Focused Backend Scope & Database Baseline | `Implemented` | Backend Core & Database |
+| **ADR-016** | User Registration & Credential Persistence | `Implemented` | Authentication & User Management |
+| **ADR-017** | JSON Login & JWT Identity | `Implemented` | Authentication & API |
 
 ---
 
@@ -393,5 +399,77 @@ Adopt modern, actively maintained cryptographic tooling:
 
 ---
 
-*This document must be updated whenever any major architectural decision or new technical component is introduced to TrailVerse.*
+## ADR-015: User-Focused Backend Scope and Database Baseline
 
+- **Date:** 2026-10-21
+- **Status:** `Implemented` (Refines ADR-013 for the current development baseline)
+- **Components:** Backend Core, Database, Project Architecture
+
+### Context
+The initial backend scaffold included routes, models, schemas, services, and migration metadata for products, categories, carts, orders, and reviews. The next development increment is focused on the user and authentication domain, so retaining unused commerce surfaces would increase maintenance cost and create misleading API and schema contracts.
+
+### Decision
+Reduce the active backend surface to the user and authentication domains:
+1. Remove the unused cart, order, product, category, review, and user-administration route/model/schema/service surfaces from the runtime application.
+2. Keep the FastAPI entrypoint, SQLAlchemy session/base, authentication modules, user model, and Alembic configuration needed for incremental development.
+3. Establish the `users` table through an Alembic migration and keep database connectivity and health checks operational while additional domains are reintroduced deliberately.
+4. Use SQLAlchemy metadata creation at application startup for the current lightweight development baseline, while retaining Alembic migration files for tracked schema history.
+
+### Consequences & Rationale
+- **Benefits:** Smaller runtime surface, clearer ownership of the current milestone, faster iteration, and fewer inactive endpoints or models to maintain.
+- **Trade-offs / Risks:** Commerce functionality is not available until it is reintroduced as a separately designed domain; startup table creation must be replaced or restricted before production deployment.
+- **Alternatives Considered:** Keeping all initial commerce modules was rejected because unused routes and models would make the current API contract broader than the implemented product scope.
+
+---
+
+## ADR-016: User Registration and Credential Persistence
+
+- **Date:** 2026-10-21
+- **Status:** `Implemented`
+- **Components:** Authentication, User Management, Database
+
+### Context
+The user-focused backend needs a safe account-creation flow that validates client input, prevents duplicate accounts, and never stores a plaintext password. User responses must also avoid exposing the stored password hash.
+
+### Decision
+Implement `POST /api/v1/auth/register` using dedicated Pydantic schemas and the existing SQLAlchemy session:
+1. Validate name, email, and password length with `UserRegister`; use `EmailStr` for email validation.
+2. Normalize email addresses by trimming whitespace and converting them to lowercase before persistence and lookup.
+3. Reject an existing email with `409 Conflict`.
+4. Hash the password with the Argon2id-backed `pwdlib` helper before writing the `users` table.
+5. Assign newly registered accounts the `customer` role and active status by default.
+6. Return a `UserResponse` containing public user fields only; never serialize `hashed_password`.
+
+### Consequences & Rationale
+- **Benefits:** Consistent account identity, safe credential storage, explicit validation, and a stable public response contract.
+- **Trade-offs / Risks:** Email normalization means email comparisons are case-insensitive by policy; password-hash cost must be monitored as deployment capacity changes.
+- **Alternatives Considered:** Storing plaintext or returning the complete ORM entity was rejected because either choice would expose credentials.
+
+---
+
+## ADR-017: JSON Login and JWT Identity
+
+- **Date:** 2026-10-21
+- **Status:** `Implemented` (Supersedes ADR-007's dual-login endpoint design for the current baseline)
+- **Components:** Authentication, API, Authorization
+
+### Context
+The current client contract is JSON-based and the backend needs a single straightforward login path for obtaining an access token and calling protected endpoints. The token must identify the authenticated database user and support expiry validation.
+
+### Decision
+Implement `POST /api/v1/auth/login` with a JSON `UserLogin` payload and `TokenResponse` response:
+1. Normalize the submitted email in the same way as registration and look up the user by email.
+2. Return `401 Unauthorized` with a bearer challenge for unknown users or invalid passwords, without revealing which credential failed.
+3. Return `403 Forbidden` for inactive accounts.
+4. Create a JWT using the configured algorithm and secret, with the user's numeric ID in the `sub` claim plus `iat` and `exp` claims.
+5. Validate bearer tokens through FastAPI's `OAuth2PasswordBearer` dependency, reject malformed/non-numeric subjects and invalid or expired JWTs, and load the active user from the database.
+6. Expose `GET /api/v1/auth/me` for retrieving the authenticated user's public profile.
+
+### Consequences & Rationale
+- **Benefits:** Simple SPA/mobile-friendly API contract, consistent error semantics, stateless token verification, and database-backed active-user checks.
+- **Trade-offs / Risks:** Access tokens remain valid until expiry unless token revocation is added; the JWT secret must be supplied through the environment and protected operationally.
+- **Alternatives Considered:** Maintaining separate form and JSON login endpoints was deferred for the current minimal API because the implemented clients use JSON and the additional compatibility surface was not required.
+
+---
+
+*This document must be updated whenever any major architectural decision or new technical component is introduced to TrailVerse.*
