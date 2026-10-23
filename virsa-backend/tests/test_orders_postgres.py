@@ -27,6 +27,8 @@ POSTGRES_URL = os.getenv("POSTGRES_TEST_DATABASE_URL")
 MIGRATION_TIMEOUT_SECONDS = 30
 CONNECT_TIMEOUT_SECONDS = 5
 DEDICATED_DATABASE_NAME = "trailverse_test"
+DEDICATED_DATABASE_USER = "trailverse_test"
+ALLOWED_TEST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 pytestmark = pytest.mark.skipif(
     not POSTGRES_URL,
@@ -36,24 +38,42 @@ pytestmark = pytest.mark.skipif(
     ),
 )
 
-
 @pytest.fixture(scope="session")
 def postgres_engine():
     assert POSTGRES_URL is not None
+
+    if os.getenv("ALLOW_DESTRUCTIVE_POSTGRES_TESTS") != "1":
+        pytest.fail(
+            "Destructive PostgreSQL tests require explicit opt-in: "
+            "set ALLOW_DESTRUCTIVE_POSTGRES_TESTS=1 only for a disposable "
+            "local test database or the isolated CI PostgreSQL service."
+        )
+
     parsed_url = urlsplit(POSTGRES_URL)
+
     if parsed_url.scheme not in {"postgresql", "postgresql+psycopg"}:
         pytest.fail(
             "POSTGRES_TEST_DATABASE_URL must use a PostgreSQL SQLAlchemy URL."
         )
+
     database_name = parsed_url.path.lstrip("/").split("?", 1)[0]
+
     if database_name != DEDICATED_DATABASE_NAME:
         pytest.fail(
             "POSTGRES_TEST_DATABASE_URL must target the dedicated "
             f"'{DEDICATED_DATABASE_NAME}' database."
         )
-    if not parsed_url.hostname:
+
+    if parsed_url.hostname not in ALLOWED_TEST_HOSTS:
         pytest.fail(
-            "POSTGRES_TEST_DATABASE_URL must include a PostgreSQL host."
+            "Destructive PostgreSQL tests may connect only to a local "
+            "PostgreSQL host: localhost, 127.0.0.1, or ::1."
+        )
+
+    if parsed_url.username != DEDICATED_DATABASE_USER:
+        pytest.fail(
+            "POSTGRES_TEST_DATABASE_URL must use the dedicated "
+            f"'{DEDICATED_DATABASE_USER}' database user."
         )
 
     engine = create_engine(
@@ -62,6 +82,7 @@ def postgres_engine():
         pool_size=8,
         max_overflow=4,
     )
+
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
@@ -88,7 +109,7 @@ def postgres_engine():
                 timeout=MIGRATION_TIMEOUT_SECONDS,
                 check=True,
             )
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired:
             pytest.fail(
                 f"Alembic {' '.join(arguments)} exceeded the "
                 f"{MIGRATION_TIMEOUT_SECONDS}-second timeout. "
@@ -102,14 +123,18 @@ def postgres_engine():
                 f"Alembic {' '.join(arguments)} failed with exit code "
                 f"{exc.returncode}:\n{output}"
             )
+
         return completed
 
     run_migration("downgrade", "base")
     run_migration("upgrade", "head")
-    yield engine
-    run_migration("downgrade", "base")
-    engine.dispose()
 
+    yield engine
+
+    try:
+        run_migration("downgrade", "base")
+    finally:
+        engine.dispose()
 
 @pytest.fixture
 def postgres_session_factory(postgres_engine):
@@ -143,7 +168,6 @@ def _seed_customer(factory, email):
         db.commit()
         db.refresh(user)
         return user.id
-
 
 def _seed_artwork_and_cart(factory, customer_ids, stock, quantities):
     with factory() as db:

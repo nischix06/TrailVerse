@@ -16,6 +16,7 @@ env:
   POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://trailverse_test:trailverse_ci_password@localhost:5432/trailverse_test
   DATABASE_URL: postgresql+psycopg://trailverse_test:trailverse_ci_password@localhost:5432/trailverse_test
   SECRET_KEY: trailverse-ci-only-not-production
+  ALLOW_DESTRUCTIVE_POSTGRES_TESTS: "1"
   PYTHONPATH: .
 
 defaults:
