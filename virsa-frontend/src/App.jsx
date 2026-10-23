@@ -115,9 +115,43 @@ const highlightedStores = [
   },
 ];
 
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1"
+).replace(/\/$/, "");
+
+async function authRequest(path, options = {}) {
+  let response;
+
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch {
+    throw new Error(
+      "Cannot reach the VIRSA API. Start the FastAPI backend and check VITE_API_BASE_URL."
+    );
+  }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = body.detail;
+    throw new Error(
+      typeof detail === "string"
+        ? detail
+        : "Authentication failed. Check your details and try again."
+    );
+  }
+  return body;
+}
+
 function App() {
   const [isLogin, setIsLogin] = useState(true);
   const [isSignedIn, setIsSignedIn] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
 
   const [formData, setFormData] = useState({
@@ -149,7 +183,7 @@ function App() {
     setFormError("");
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
     setFormError("");
 
@@ -158,11 +192,49 @@ function App() {
       return;
     }
 
-    // Demo navigation until backend authentication is connected.
-    setIsSignedIn(true);
+    setIsSubmitting(true);
+    try {
+      if (!isLogin) {
+        await authRequest("/auth/register", {
+          method: "POST",
+          body: JSON.stringify({
+            name: formData.username.trim(),
+            email: formData.email.trim().toLowerCase(),
+            password: formData.password,
+          }),
+        });
+      }
+
+      const tokenResponse = await authRequest("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          email: formData.email.trim().toLowerCase(),
+          password: formData.password,
+        }),
+      });
+
+      // Verify the issued token before entering the signed-in experience.
+      await authRequest("/auth/me", {
+        headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+      });
+
+      sessionStorage.setItem("virsa_access_token", tokenResponse.access_token);
+      setIsSignedIn(true);
+      setFormData({
+        username: "",
+        email: "",
+        password: "",
+        confirmPassword: "",
+      });
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Unable to sign in.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSignOut = () => {
+    sessionStorage.removeItem("virsa_access_token");
     setIsSignedIn(false);
     setIsLogin(true);
     setFormData({
@@ -307,9 +379,17 @@ function App() {
             </p>
           )}
 
-          <button type="submit" className="submit-button">
-            {isLogin ? "Sign In" : "Create Account"}
-            <span aria-hidden="true">↗</span>
+          <button
+            type="submit"
+            className="submit-button"
+            disabled={isSubmitting}
+          >
+            {isSubmitting
+              ? "Please wait…"
+              : isLogin
+                ? "Sign In"
+                : "Create Account"}
+            {!isSubmitting && <span aria-hidden="true">↗</span>}
           </button>
         </form>
 
